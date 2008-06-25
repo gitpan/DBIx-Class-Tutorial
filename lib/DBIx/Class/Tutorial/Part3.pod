@@ -1,0 +1,212 @@
+=head1 NAME
+
+DBIx::Class::Tutorial::Part3
+
+=head1 DESCRIPTION
+
+If you missed the previous parts, go and start reading at
+L<DBIx::Class::Tutorial::Part1>.
+
+Stay here if you're just after ways to deal with the data you're
+getting out of DBIx::Class, or adding your own accessors.
+
+=head1 GLOSSARY
+
+=over
+
+=item Inflation and Deflation
+
+The act of converting data coming out of the database, into a useful
+object in order to call methods on it, is called C<Inflation>. This is
+usually done for the data from one column of a Row. The classic
+example is a field containing data representing a specific date and
+time. The data type for these fields is usually C<datetime> or
+C<timestamp>. An C<Inflator> can turn the datetime data into a
+L<DateTime> object.
+
+Deflation is the opposite. Turning a supplied object back into a
+string or other piece of data suitable for inserting into the
+database.
+
+=item Auto-Incrementing and Sequences
+
+Most databases provide a way to auto-increment a numeric column,
+usually an integer column, to use as a primary key. Some allow you to
+create a sequence which can be queried for its next value, to use as
+the primary key. The difficulty with creating new rows using
+auto-increment primary keys is retrieving the value of the key after a
+new row has been inserted.
+
+=item Non-column data
+
+An oft-asked question is: How can I add accessors to my Result classes
+to store non-column data?
+
+We can easily add new accessors to Row objects to set and retrieve
+data not stored in the database.
+
+=back
+
+=head1 Dealing with Primary Keys
+
+L<DBIx::Class> automatically fetches the primary key from the database
+for you, and stores it in your new row object.
+
+  ## Fetch a new path and print its ID:
+  my $path = $schema->resultset('Path')->create(
+    { path => '/support', }
+  );
+  print $path->id;
+
+This is done using L<last_insert_id|DBI>.
+
+Tables using sequences for their primary keys should be updated using
+a trigger to update the value. The name of the sequence can be set
+in the L<add_columns|DBIx::Class::ResultSource/add_columns> so that
+the last value can be fetched by L<DBIx::Class::PK::Auto>.
+
+=head1 Turning values into useful objects
+
+Just retrieving raw data from the database is only half the
+battle. You likely want to also do something useful with it, or
+manipulate it and re-insert. For example, many tables have a field
+containing the date and time the row was created, or last modified.
+
+If we want to take that date and display, for example, how long since
+the row was modified in days/hours/minutes, it would be useful to have
+that C<datetime> value as a L<DateTime> object, then we can use
+L<DateTime::Duration> or similar to display the elapsed time.
+
+To do this, we can add a new C<component> to the C<Result class>es. In
+F<lib/Breadcrumbs/Schema/Path.pm> you'll notice a line that says:
+
+  __PACKAGE__->load_components(qw/ Core/);
+
+It may contain other components as well. Add the
+L<InflateColumn::DateTime|DBIx::Class::InflateColumn::DateTime>
+component in front of the existing ones.
+
+  __PACKAGE__->load_components(qw/ InflateColumn::DateTime Core /);
+
+Order is important. Core must go last.
+
+The accessors of any columns of type C<datetime>, C<timestamp> and
+C<date> will now return L<DateTime> objects when called.
+
+  ## print last_modified as an iso formatted string
+  my $dt = $path->last_modified();
+  print $dt->iso_string;
+
+You can now also set the value of last_modified using a L<DateTime>
+object.
+
+  ## Set last_modified
+  my $dtnow = DateTime->now();
+  $path->last_modified($dtnow);
+  $path->update();
+
+To see how to create more inflators and deflators for other types of
+objects, read L<DBIx::Class::InflateColumn>.
+
+=head1 Changing the standard accessors
+
+L<DBIx::Class> creates standard getter/setter accessors for you, for
+all your values. If you would like to change or manipulate the value
+of a particular column on the way into or out of the database, you can
+write your own accessors.
+
+To do this you will first have to edit the Result class, adding the
+C<accessor> key in your L<DBIx::Class::ResultSource/add_columns> call.
+
+  ## add accessor for path column, in 
+  ## Breadcrumbs::Schema::Path
+  __PACKAGE__->add_columns( ...
+                           path => {
+                             data_type => 'varchar',
+                             size      => 255,
+                             accessor  => '_path',
+                           }
+                           .. 
+                           );
+
+DBIx::Class will now create this accessor with the name C<_path>. We
+can now write our own C<path> method.
+
+  ## Clean extra slashes off paths
+
+  sub path {
+    my ($self, $value) = @_;
+
+    if(@_ > 1) {
+      $value = s{^/}{};
+      $value = s{/$}{};
+      $self->_path($value);
+    }
+    return $self->_path();
+  }
+
+=head1 Adding your own data and methods
+
+You can add your own accessors for non-column (database) data to your
+Result classes quite easily. Just edit the Result classes.
+
+  ## Add accessor for storing whether a path has been checked
+  ## to Breadcrumbs::Schema::Path
+
+  __PACKAGE__->mk_group_accessors('simple' => qw/is_checked/);
+
+  $path->is_checked(1);
+
+Or, just add an entire method to do the work and return the result.
+
+  ## Add method to check if the path exists:
+
+  sub check {
+    my ($self, $root) = @_;
+
+    return 1 if(-d catfile($root, $self->path));
+
+    return 0;
+  }
+
+=head1 Adding ResultSet methods
+
+Putting methods in your Result classes will make them available to the
+Row objects. To add methods to entire resultsets, you will first need
+to subclass L<DBIx::Class::ResultSet>.
+
+  package Breadcrumbs::ResultSet::Path;
+  use base 'DBIx::Class::ResultSet';
+
+  sub check_paths {
+    ## $self is a resultset object!
+    my ($self, $root) = @_;
+
+    my $ok = 1;
+    foreach my $path ($self->all) {
+       $ok = 0 if(!-d catfile($root, $path->path));
+    }
+
+    return $ok; 
+  }
+
+To make this module your default resultset for all Path resultsets,
+call C<resultset_class> in your Result class.
+
+  ## Set the new resultset class, in Breadcrumbs::Schema::Path:
+  __PACKAGE__->resultset_class('Breadcrumbs::ResultSet::Path');
+
+Make sure you don't create the new C<ResultSet> class in the
+namespace/directory underneath the existing Schema. This will cause
+L<DBIx::Class::Schema/load_classes> to attempt to load it as if it
+were a Result class. The result will not be good.
+
+=head1 CONCLUSIONS
+
+=head1 EXERCISES
+
+=head1 WHERE TO GO NEXT
+
+=head1 AUTHOR
+
+Jess Robinson <castaway@desert-island.me.uk>

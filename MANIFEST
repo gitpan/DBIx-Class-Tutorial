@@ -1,0 +1,7 @@
+lib/DBIx/Class/Tutorial.pod
+lib/DBIx/Class/Tutorial/Part1.pod
+lib/DBIx/Class/Tutorial/Part2.pod
+lib/DBIx/Class/Tutorial/Part3.pod
+Makefile.PL
+MANIFEST			This list of files
+META.yml                                 Module meta-data (added by MakeMaker)
